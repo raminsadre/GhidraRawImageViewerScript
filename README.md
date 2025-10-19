@@ -32,6 +32,8 @@ The "Save parameters" button saves the current parameters as a precomment at the
 
 - A 16-bit format
 
+- A zoom function because 320x200 images from old games are very small on modern screens.
+
 - An export function to save the image as a png file.
 
 
