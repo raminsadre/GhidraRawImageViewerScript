@@ -13,7 +13,7 @@ import ghidra.program.model.mem.Memory;
 import javax.swing.*;
 import javax.swing.event.ChangeEvent;
 import java.awt.*;
-import java.awt.event.ActionEvent;
+import java.awt.event.*;
 import java.awt.image.BufferedImage;
 import java.util.List;
 import java.util.Arrays;
@@ -31,17 +31,28 @@ public class RawImageViewer extends GhidraScript {
     
     private static final String paramHeader = "$RAWIMAGE (do not modify or add comment after this line),";
     
+    private static JButton createSmallButton(String text) {
+        JButton button = new JButton(text);
+        Insets insets = button.getMargin();
+        button.setMargin(new Insets(insets.top, 8, insets.bottom, 8));
+        return button;
+    }
+    
+    
     private JLabel imageComp;
     private JTextField addressComp;
     private JSpinner planesComp;
     private Address start;
-    private int width, height, format, numPlanes;
+    private int width, height, format, numPlanes, modulo;
+    private int bytesPerRow;
+    private int clickedX, clickedY;
 
     private void setDefaultParameters() {
-        width = 16;
-        height = 16;
+        width = 320;
+        height = 200;
         format = 0;
         numPlanes = 1;
+        modulo = 0;
     }
 
     // loads the image parameters from the pre-comment.
@@ -63,11 +74,19 @@ public class RawImageViewer extends GhidraScript {
             int height = Integer.parseInt(params[2]);
             int format = Integer.parseInt(params[3]);
             int numPlanes = Integer.parseInt(params[4]);
-            if(width<0 || width>10000 || height<0 || height>10000
-                || format<0 || format>=formats.length || numPlanes<1 || numPlanes>8) {
+            int modulo = Integer.parseInt(params[5]);
+            if(width<0 || width>10000
+                || height<0 || height>10000
+                || format<0 || format>=formats.length
+                || numPlanes<1 || numPlanes>8
+                || modulo<0 || modulo>10000) {
                     throw new IllegalArgumentException();
             }
-            this.width = width; this.height = height; this.format = format; this.numPlanes = numPlanes;
+            this.width = width;
+            this.height = height;
+            this.format = format;
+            this.numPlanes = numPlanes;
+            this.modulo = modulo;
             return true;
         }
         catch (Exception e) {
@@ -77,7 +96,7 @@ public class RawImageViewer extends GhidraScript {
     
     // stores the image parameters in the pre-comment
     private void storeParametersInComment() {
-        String params = paramHeader + width + "," + height + "," + format + "," + numPlanes;
+        String params = paramHeader + width + "," + height + "," + format + "," + numPlanes + "," + modulo;
         String comment = getPreComment(start);
         if (comment == null) {
             comment = params;
@@ -115,31 +134,32 @@ public class RawImageViewer extends GhidraScript {
             switch(format) {
             case 0 -> {
                 // 1-bit monochrome (8 pixels per byte, MSB-first)
-                byte[] data = new byte[(int) Math.ceil((width * height) / 8.0)];
+                bytesPerRow = (width + 7) / 8 + modulo;                
+                byte[] data = new byte[bytesPerRow*height];
                 mem.getBytes(start, data);
+                
                 img = new BufferedImage(width, height, BufferedImage.TYPE_BYTE_BINARY);
                 for (int y = 0; y < height; y++) {
                     for (int x = 0; x < width; x++) {
-                        int byteIndex = (y * ((width + 7) / 8)) + (x / 8);
+                        int byteIndex = y * bytesPerRow + x / 8;
                         int bitIndex = 7 - (x % 8);
-                        if (byteIndex < data.length) {
-                            int bit = (data[byteIndex] >> bitIndex) & 1;
-                            int color = bit == 1 ? 0xFFFFFF : 0x000000;
-                            img.setRGB(x, y, color);
-                        }
+                        int bit = (data[byteIndex] >> bitIndex) & 1;
+                        int color = bit == 1 ? 0xFFFFFF : 0x000000;
+                        img.setRGB(x, y, color);
                     }
                 }
             }
             case 1 -> {
                 // 8-bit grayscale
-                byte[] data = new byte[width*height];
+                bytesPerRow = width + modulo;
+                byte[] data = new byte[bytesPerRow * height];
                 mem.getBytes(start, data);
-                img = new BufferedImage(width, height, BufferedImage.TYPE_BYTE_GRAY);
                 
-                int i = 0;
+                img = new BufferedImage(width, height, BufferedImage.TYPE_BYTE_GRAY);                
                 for (int y = 0; y < height; y++) {
-                    for (int x = 0; x < width && i < data.length; x++) {
-                        int val = data[i++] & 0xFF;
+                    for (int x = 0; x < width; x++) {
+                        int byteIndex = y * bytesPerRow + x;
+                        int val = data[byteIndex] & 0xFF;
                         int rgb = (val << 16) | (val << 8) | val;
                         img.setRGB(x, y, rgb);
                     }
@@ -147,16 +167,17 @@ public class RawImageViewer extends GhidraScript {
             }
             case 2 -> {
                 // 24-bit RGB
-                byte[] data = new byte[width*height*3];
+                bytesPerRow = width * 3 + modulo;
+                byte[] data = new byte[bytesPerRow * height];
                 mem.getBytes(start, data);
-                img = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
                 
-                int i = 0;
+                img = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);           
                 for (int y = 0; y < height; y++) {
-                    for (int x = 0; x < width && i + 2 < data.length; x++) {
-                        int r = data[i++] & 0xFF;
-                        int g = data[i++] & 0xFF;
-                        int b = data[i++] & 0xFF;
+                    for (int x = 0; x < width; x++) {
+                        int byteIndex = y * bytesPerRow + x * 3;
+                        int r = data[byteIndex] & 0xFF;
+                        int g = data[byteIndex+1] & 0xFF;
+                        int b = data[byteIndex+2] & 0xFF;
                         int rgb = (r << 16) | (g << 8) | b;
                         img.setRGB(x, y, rgb);
                     }
@@ -164,17 +185,18 @@ public class RawImageViewer extends GhidraScript {
             }
             case 3 -> {
                 // 32-bit RGBA
-                byte[] data = new byte[width*height*4];
+                bytesPerRow = width * 4 + modulo;
+                byte[] data = new byte[bytesPerRow * height];
                 mem.getBytes(start, data);
-                img = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
                 
-                int i = 0;
+                img = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
                 for (int y = 0; y < height; y++) {
-                    for (int x = 0; x < width && i + 3 < data.length; x++) {
-                        int r = data[i++] & 0xFF;
-                        int g = data[i++] & 0xFF;
-                        int b = data[i++] & 0xFF;
-                        int a = data[i++] & 0xFF;
+                    for (int x = 0; x < width; x++) {
+                        int byteIndex = y * bytesPerRow + x * 4;
+                        int r = data[byteIndex] & 0xFF;
+                        int g = data[byteIndex+1] & 0xFF;
+                        int b = data[byteIndex+2] & 0xFF;
+                        int a = data[byteIndex+3] & 0xFF;
                         int rgba = (a << 24) | (r << 16) | (g << 8) | b;
                         img.setRGB(x, y, rgba);
                     }
@@ -182,10 +204,9 @@ public class RawImageViewer extends GhidraScript {
             }
             case 4 -> {
                 // Bitplane mode
-                int bytesPerPlane = (int) Math.ceil((width * height) / 8.0);
-                byte[] data = new byte[numPlanes * bytesPerPlane];
-                mem.getBytes(start, data);
-                img = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+                bytesPerRow = (width + 7) / 8 + modulo;
+                byte[] data = new byte[bytesPerRow * height * numPlanes];
+                mem.getBytes(start, data);                
                 
                 // make a grayscale palette
                 int numColors = 1 << numPlanes;
@@ -195,13 +216,14 @@ public class RawImageViewer extends GhidraScript {
                     palette[i] = (val << 16) | (val << 8) | val;
                 }
                 
+                img = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
                 for (int y = 0; y < height; y++) {
                     for (int x = 0; x < width; x++) {
-                        int bitIndex = 7 - (x % 8);
-                        int byteOffset = (y * (width / 8)) + (x / 8);
+                        int byteOffset = y * bytesPerRow + x / 8;
+                        int bitIndex = 7 - (x % 8);                        
                         int colorIndex = 0;
                         for (int p = 0; p < numPlanes; p++) {
-                            int planeByteIndex = byteOffset + p * bytesPerPlane;
+                            int planeByteIndex = byteOffset + p * bytesPerRow * height;
                             int bit = (data[planeByteIndex] >> bitIndex) & 1;
                             colorIndex |= (bit << p);
                         }
@@ -230,7 +252,7 @@ public class RawImageViewer extends GhidraScript {
         
         if(!loadParametersFromComment()) {
             setDefaultParameters();
-        }
+        }       
         
         // Image window
         JFrame frame = new JFrame("Raw Image Viewer");
@@ -242,17 +264,27 @@ public class RawImageViewer extends GhidraScript {
         toolPanel1.setLayout(new FlowLayout(FlowLayout.LEFT));
         toolPanel.add(toolPanel1);
         
+        // save button
+        JButton saveButton = new JButton("Save parameters");
+        saveButton.addActionListener((ActionEvent e)->{
+            storeParametersInComment();
+        });
+        toolPanel1.add(saveButton);
+        
+        // the address buttons
+        
         toolPanel1.add(new JLabel("Start address:"));
         
-        ((JButton)(toolPanel1.add(new JButton("-4")))).addActionListener((ActionEvent e)->{
+        ((JButton)(toolPanel1.add(createSmallButton("-1 row")))).addActionListener((ActionEvent e)->{
+            setStartAddress(-bytesPerRow);
+        });
+        ((JButton)(toolPanel1.add(createSmallButton("-4")))).addActionListener((ActionEvent e)->{
             setStartAddress(-4);
         });
-        
-        ((JButton)(toolPanel1.add(new JButton("-2")))).addActionListener((ActionEvent e)->{
+        ((JButton)(toolPanel1.add(createSmallButton("-2")))).addActionListener((ActionEvent e)->{
             setStartAddress(-2);
         });
-        
-        ((JButton)(toolPanel1.add(new JButton("-1")))).addActionListener((ActionEvent e)->{
+        ((JButton)(toolPanel1.add(createSmallButton("-1")))).addActionListener((ActionEvent e)->{
             setStartAddress(-1);
         });
         
@@ -260,28 +292,22 @@ public class RawImageViewer extends GhidraScript {
         addressComp.setEditable(false);
         toolPanel1.add(addressComp);
         
-        ((JButton)(toolPanel1.add(new JButton("+1")))).addActionListener((ActionEvent e)->{
+        ((JButton)(toolPanel1.add(createSmallButton("+1")))).addActionListener((ActionEvent e)->{
             setStartAddress(1);
         });
-        
-        ((JButton)(toolPanel1.add(new JButton("+2")))).addActionListener((ActionEvent e)->{
+        ((JButton)(toolPanel1.add(createSmallButton("+2")))).addActionListener((ActionEvent e)->{
             setStartAddress(2);
         });
-        
-        ((JButton)(toolPanel1.add(new JButton("+4")))).addActionListener((ActionEvent e)->{
+        ((JButton)(toolPanel1.add(createSmallButton("+4")))).addActionListener((ActionEvent e)->{
             setStartAddress(4);
+        });
+        ((JButton)(toolPanel1.add(createSmallButton("+1 row")))).addActionListener((ActionEvent e)->{
+            setStartAddress(bytesPerRow);
         });
 
         JPanel toolPanel2 = new JPanel();
         toolPanel2.setLayout(new FlowLayout(FlowLayout.LEFT));
-        toolPanel.add(toolPanel2);
-        
-        // save button
-        JButton saveButton = new JButton("Save parameters");
-        saveButton.addActionListener((ActionEvent e)->{
-            storeParametersInComment();
-        });
-        toolPanel2.add(saveButton);
+        toolPanel.add(toolPanel2);       
         
         // width input field
         toolPanel2.add(new JLabel("Width:"));
@@ -326,10 +352,43 @@ public class RawImageViewer extends GhidraScript {
         planesComp.setEnabled(format==4);
         toolPanel2.add(planesComp);
         
+        // modulo input field
+        toolPanel2.add(new JLabel("Modulo:"));
+        SpinnerNumberModel moduloModel = new SpinnerNumberModel(modulo, 0, 10000, 1);
+        JSpinner moduloComp = new JSpinner(moduloModel);
+        moduloComp.addChangeListener((ChangeEvent e)->{
+            modulo = (int) moduloComp.getValue();
+            onImageChange();
+        });
+        toolPanel2.add(moduloComp);
+        
         frame.getContentPane().add(toolPanel, BorderLayout.NORTH);
         
+        // the image component and its context menu
         imageComp = new JLabel();
-        JScrollPane scrollPane = new JScrollPane(imageComp);
+        imageComp.addMouseListener(new MouseAdapter() {
+            public void mousePressed(MouseEvent e) {
+                // remember where the user clicked
+                clickedX = e.getX();
+                clickedY = e.getY();
+            }
+        });        
+        JPopupMenu menu = new JPopupMenu();
+        JMenuItem gotoItem = new JMenuItem("Go to this row");
+        gotoItem.addActionListener((ActionEvent e)->{
+            setStartAddress(clickedY * bytesPerRow);
+        });
+        menu.add(gotoItem);
+        imageComp.setComponentPopupMenu(menu);
+        
+        // we put in the label showing the image in another panel
+        // to prevent the label filling the entire scroll pane
+        // (so that the popup menu only opens when clicking the image)
+        JPanel imageCompPanel = new JPanel();
+        imageCompPanel.setLayout(new FlowLayout(FlowLayout.LEFT));
+        imageCompPanel.add(imageComp);
+        
+        JScrollPane scrollPane = new JScrollPane(imageCompPanel);
         scrollPane.setPreferredSize(new Dimension(640, 400));
         frame.getContentPane().add(scrollPane, BorderLayout.CENTER);
         
