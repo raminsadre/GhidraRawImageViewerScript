@@ -26,7 +26,9 @@ public class RawImageViewer extends GhidraScript {
         "Grayscale (8 bits/pixel)",
         "RGB24 (24 bits/pixel)",
         "RGBA32 (32 bits/pixel)",
-        "Bitplanes"
+        "Bitplanes",
+        "Interleaved bitplanes",
+        "Interleaved bitplanes by 16"
     };
     
     private static final String paramHeader = "$RAWIMAGE (do not modify or add comment after this line),";
@@ -118,6 +120,16 @@ public class RawImageViewer extends GhidraScript {
         start = start.add(displacement);
         onImageChange();
     }
+    
+    private int[] makeGrayscalePalette() {
+        int numColors = 1 << numPlanes;
+        int[] palette = new int[numColors];
+        for(int i = 0; i < numColors; i++) {
+            int val = (i * 255) / numColors;
+            palette[i] = (val << 16) | (val << 8) | val;
+        }
+        return palette;
+    }
 
     private void onImageChange() {      
         if(width == 0 || height == 0) {
@@ -208,14 +220,7 @@ public class RawImageViewer extends GhidraScript {
                 byte[] data = new byte[bytesPerRow * height * numPlanes];
                 mem.getBytes(start, data);                
                 
-                // make a grayscale palette
-                int numColors = 1 << numPlanes;
-                int[] palette = new int[numColors];
-                for(int i = 0; i < numColors; i++) {
-                    int val = (i * 255) / numColors;
-                    palette[i] = (val << 16) | (val << 8) | val;
-                }
-                
+                int[] palette = makeGrayscalePalette();                
                 img = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
                 for (int y = 0; y < height; y++) {
                     for (int x = 0; x < width; x++) {
@@ -224,6 +229,52 @@ public class RawImageViewer extends GhidraScript {
                         int colorIndex = 0;
                         for (int p = 0; p < numPlanes; p++) {
                             int planeByteIndex = byteOffset + p * bytesPerRow * height;
+                            int bit = (data[planeByteIndex] >> bitIndex) & 1;
+                            colorIndex |= (bit << p);
+                        }
+                        int rgb = palette[colorIndex & 0xF];
+                        img.setRGB(x, y, rgb);
+                    }
+                }
+            }
+            case 5 -> {
+                // Interleaved bitplane mode
+                bytesPerRow = (width + 7) / 8 + modulo;
+                byte[] data = new byte[bytesPerRow * height * numPlanes];
+                mem.getBytes(start, data);                
+                
+                int[] palette = makeGrayscalePalette(); 
+                img = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+                for (int y = 0; y < height; y++) {
+                    for (int x = 0; x < width; x++) {
+                        int byteOffset = y * numPlanes * bytesPerRow + x / 8;
+                        int bitIndex = 7 - (x % 8);                        
+                        int colorIndex = 0;
+                        for (int p = 0; p < numPlanes; p++) {
+                            int planeByteIndex = byteOffset + p * bytesPerRow;                            
+                            int bit = (data[planeByteIndex] >> bitIndex) & 1;
+                            colorIndex |= (bit << p);
+                        }
+                        int rgb = palette[colorIndex & 0xF];
+                        img.setRGB(x, y, rgb);
+                    }
+                }
+            }
+            case 6 -> {
+                // Interleaved bitplane mode where pixels are stored in groups of 16
+                bytesPerRow = (width + 7) / 8 + modulo;
+                byte[] data = new byte[bytesPerRow * height * numPlanes];
+                mem.getBytes(start, data);                
+                
+                int[] palette = makeGrayscalePalette(); 
+                img = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+                for (int y = 0; y < height; y++) {
+                    for (int x = 0; x < width; x++) {
+                        int byteOffset = y * numPlanes * bytesPerRow + x/16 * 2 * numPlanes + (x % 16) / 8;
+                        int bitIndex = 7 - (x % 8);                        
+                        int colorIndex = 0;
+                        for (int p = 0; p < numPlanes; p++) {
+                            int planeByteIndex = byteOffset + p * 2;                            
                             int bit = (data[planeByteIndex] >> bitIndex) & 1;
                             colorIndex |= (bit << p);
                         }
@@ -335,7 +386,7 @@ public class RawImageViewer extends GhidraScript {
         formatComp.setSelectedIndex(format);
         formatComp.addActionListener((ActionEvent e)->{
             format = formatComp.getSelectedIndex();
-            planesComp.setEnabled(format==4);
+            planesComp.setEnabled(format==4 || format==5 || format==6);
             onImageChange();
         });
         toolPanel2.add(formatComp);
@@ -349,7 +400,7 @@ public class RawImageViewer extends GhidraScript {
             numPlanes = (int) planesComp.getValue();
             onImageChange();
         });
-        planesComp.setEnabled(format==4);
+        planesComp.setEnabled(format==4 || format==5 || format==6);
         toolPanel2.add(planesComp);
         
         // modulo input field
